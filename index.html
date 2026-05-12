@@ -1,0 +1,613 @@
+# index.html (PRO Version)
+
+```html
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>中医方剂智能检索系统 PRO</title>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#007bff">
+
+<style>
+body{
+  font-family:Arial,sans-serif;
+  margin:10px;
+  background:#f5f7fb;
+}
+
+h2,h3{
+  margin:10px 0;
+}
+
+input,select,button{
+  width:100%;
+  padding:10px;
+  margin-top:6px;
+  border-radius:8px;
+  border:1px solid #ccc;
+  box-sizing:border-box;
+  font-size:16px;
+}
+
+button{
+  background:#007bff;
+  color:white;
+  border:none;
+}
+
+.card{
+  background:white;
+  border-radius:12px;
+  padding:12px;
+  margin-top:10px;
+  box-shadow:0 2px 6px rgba(0,0,0,0.08);
+  position:relative;
+}
+
+.title{
+  font-size:18px;
+  font-weight:bold;
+}
+
+.comp div{
+  margin:2px 0;
+}
+
+.tag{
+  background:#eef;
+  padding:2px 6px;
+  border-radius:6px;
+}
+
+.gram{
+  color:#c00;
+  font-weight:bold;
+}
+
+.small{
+  font-size:13px;
+  color:#666;
+}
+
+.star{
+  position:absolute;
+  top:10px;
+  right:10px;
+  font-size:22px;
+}
+
+mark{
+  background:yellow;
+}
+
+.modal{
+  display:none;
+  position:fixed;
+  top:0;
+  left:0;
+  width:100%;
+  height:100%;
+  background:rgba(0,0,0,0.5);
+  z-index:999;
+}
+
+.modal-content{
+  background:white;
+  margin:5% auto;
+  width:95%;
+  max-height:85%;
+  overflow-y:auto;
+  border-radius:12px;
+  padding:15px;
+}
+
+.close{
+  float:right;
+  font-size:22px;
+  cursor:pointer;
+}
+
+.section-title{
+  margin-top:20px;
+  font-weight:bold;
+  font-size:18px;
+}
+
+.warning{
+  color:red;
+  font-weight:bold;
+}
+</style>
+</head>
+<body>
+
+<h2>中医方剂智能检索系统 PRO</h2>
+
+<input type="file" id="fileInput" accept=".xlsx,.xls">
+<button onclick="clearData()">🗑 清除数据</button>
+
+<select id="colSelect">
+  <option value="all">全部</option>
+  <option value="方名">方名</option>
+  <option value="主治">主治</option>
+  <option value="组成">组成</option>
+</select>
+
+<input type="text" id="kw" placeholder="输入关键词（多个空格）">
+<button onclick="searchData()">🔍 搜索</button>
+
+<div class="section-title">⭐ 常用方</div>
+<div id="favList"></div>
+
+<div class="section-title">📋 全部方剂</div>
+<div id="list"></div>
+
+<div class="section-title">📦 库存管理</div>
+<div id="stockSection"></div>
+<div id="warningSection"></div>
+
+<div class="section-title">💊 发药</div>
+<div id="dispenseSection"></div>
+
+<div class="section-title">📜 使用记录</div>
+<div id="logSection"></div>
+
+<div class="section-title">📊 每日用药报告</div>
+<div id="reportSection"></div>
+
+<div class="section-title">🔥 Top 10 用药</div>
+<div id="top10Section"></div>
+
+<div id="modal" class="modal">
+  <div class="modal-content">
+    <span class="close" onclick="closeModal()">×</span>
+    <div id="detail"></div>
+  </div>
+</div>
+
+<script>
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('./service-worker.js');
+}
+
+let rawData = JSON.parse(localStorage.getItem('data')||'[]');
+let favorites = JSON.parse(localStorage.getItem('favorites')||'[]');
+let stock = JSON.parse(localStorage.getItem('stock')||'{}');
+let actualUse = JSON.parse(localStorage.getItem('actualUse')||'{}');
+let usageLog = JSON.parse(localStorage.getItem('usageLog')||'[]');
+
+let currentTokens = [];
+
+function saveAll(){
+  localStorage.setItem('data', JSON.stringify(rawData));
+  localStorage.setItem('favorites', JSON.stringify(favorites));
+  localStorage.setItem('stock', JSON.stringify(stock));
+  localStorage.setItem('actualUse', JSON.stringify(actualUse));
+  localStorage.setItem('usageLog', JSON.stringify(usageLog));
+}
+
+function clearData(){
+  if(confirm('确定清除所有数据？')){
+    localStorage.clear();
+    location.reload();
+  }
+}
+
+function parseComposition(text){
+  if(!text) return [];
+
+  return String(text)
+    .split(/\n|\r/)
+    .map(s=>s.trim())
+    .filter(Boolean)
+    .map(line=>{
+      const m = line.match(/(.+?)\s*(\d+(?:\.\d+)?)\s*g/i);
+
+      return m
+      ? {name:m[1], gram:Number(m[2])}
+      : {name:line, gram:0};
+    });
+}
+
+function highlight(text){
+  let t = text || '';
+
+  currentTokens.forEach(k=>{
+    const reg = new RegExp(`(${k})`, 'gi');
+    t = t.replace(reg,'<mark>$1</mark>');
+  });
+
+  return t;
+}
+
+function toggleFavorite(name){
+  if(favorites.includes(name)){
+    favorites = favorites.filter(f=>f!==name);
+  }else{
+    favorites.push(name);
+  }
+
+  saveAll();
+  renderAll();
+}
+
+function renderCard(r,index){
+  const isFav = favorites.includes(r.方名);
+
+  const comp = r._组成解析.map(i=>`
+    <div>
+      <span class="tag">${highlight(i.name)}</span>
+      <span class="gram">${i.gram}g</span>
+    </div>
+  `).join('');
+
+  return `
+    <div class="card" onclick="showDetail(${index})">
+
+      <div class="star"
+      onclick="event.stopPropagation();toggleFavorite('${r.方名}')">
+      ${isFav ? '⭐' : '☆'}
+      </div>
+
+      <div class="title">${highlight(r.方名)}</div>
+
+      <div class="comp">${comp}</div>
+
+      <div class="small">${highlight(r.主治)}</div>
+
+    </div>
+  `;
+}
+
+function renderAll(){
+  renderFormula();
+  renderStock();
+  renderDispense();
+  renderUsageLog();
+  renderDailyReport();
+  renderTop10();
+}
+
+function renderFormula(){
+  const list = document.getElementById('list');
+  const favList = document.getElementById('favList');
+
+  list.innerHTML = '';
+  favList.innerHTML = '';
+
+  rawData.forEach((r,i)=>{
+    const html = renderCard(r,i);
+
+    if(favorites.includes(r.方名)){
+      favList.innerHTML += html;
+    }else{
+      list.innerHTML += html;
+    }
+  });
+}
+
+function showDetail(index){
+  const r = rawData[index];
+  if(!r) return;
+
+  const comp = r._组成解析.map(i=>`
+    <div><b>${i.name}</b> ${i.gram}g</div>
+  `).join('');
+
+  document.getElementById('detail').innerHTML = `
+    <h3>${r.方名}</h3>
+    <p><b>大类：</b>${r.大类}</p>
+    <p><b>小类：</b>${r.小类}</p>
+    <p><b>组成：</b><br>${comp}</p>
+    <p><b>功用：</b>${r.功用}</p>
+    <p><b>主治：</b>${r.主治}</p>
+    <p><b>证治机理：</b>${r.证治机理}</p>
+    <p><b>运用：</b>${r.运用}</p>
+    <p><b>附方：</b>${r.附方 || '-'}</p>
+  `;
+
+  document.getElementById('modal').style.display='block';
+}
+
+function closeModal(){
+  document.getElementById('modal').style.display='none';
+}
+
+function includesAllTokens(text,tokens){
+  return tokens.every(k=>(text||'').includes(k));
+}
+
+function searchData(){
+  const col = document.getElementById('colSelect').value;
+  const kw = document.getElementById('kw').value.trim();
+
+  if(!kw){
+    currentTokens=[];
+    return renderFormula();
+  }
+
+  currentTokens = kw.split(/\s+/);
+
+  const filtered = rawData.filter(r=>{
+    if(col==='all') return includesAllTokens(r._searchBlob,currentTokens);
+    if(col==='组成') return includesAllTokens(r['组成'],currentTokens);
+    return includesAllTokens(r[col],currentTokens);
+  });
+
+  document.getElementById('list').innerHTML = filtered.map((r,i)=>renderCard(r,i)).join('');
+}
+
+function updateStock(name,val){
+  stock[name] = Number(val)||0;
+  saveAll();
+  renderStock();
+}
+
+function updateActual(name,val){
+  actualUse[name] = Number(val)||0;
+  saveAll();
+  renderStock();
+}
+
+function calculateUsage(){
+  let total = {};
+
+  usageLog.forEach(log=>{
+    let formula = rawData.find(r=>r.方名===log.方名);
+    if(!formula) return;
+
+    formula._组成解析.forEach(c=>{
+      total[c.name] = (total[c.name]||0) + (c.gram * log.剂数);
+    });
+  });
+
+  return total;
+}
+
+function renderStock(){
+  let usage = calculateUsage();
+
+  let herbs = new Set([
+    ...Object.keys(stock),
+    ...Object.keys(usage)
+  ]);
+
+  let html='';
+  let warning='';
+
+  herbs.forEach(h=>{
+    let s = stock[h]||0;
+    let use = actualUse[h] || usage[h] || 0;
+
+    let days = use>0 ? (s/use).toFixed(1) : '-';
+
+    html += `
+      <div class="card">
+        <b>${h}</b><br>
+
+        库存:
+        <input type="number"
+        value="${s}"
+        onchange="updateStock('${h}',this.value)">
+
+        实际日用:
+        <input type="number"
+        value="${actualUse[h]||''}"
+        onchange="updateActual('${h}',this.value)">
+
+        👉 可用: <b>${days}</b> 天
+      </div>
+    `;
+
+    if(days !== '-' && Number(days) < 5){
+      warning += `<div class="warning">⚠️ ${h} 库存不足 (${days} 天)</div>`;
+    }
+  });
+
+  document.getElementById('stockSection').innerHTML = html;
+  document.getElementById('warningSection').innerHTML = warning;
+}
+
+function renderDispense(){
+  let html='';
+
+  rawData.forEach((r,index)=>{
+    html += `
+      <div class="card">
+        <b>${r.方名}</b><br>
+
+        <input type="number"
+        id="dose_${index}"
+        value="1">
+
+        <button onclick="dispense(${index})">发药</button>
+      </div>
+    `;
+  });
+
+  document.getElementById('dispenseSection').innerHTML = html;
+}
+
+function dispense(index){
+  let r = rawData[index];
+  if(!r) return;
+
+  let dose = Number(document.getElementById(`dose_${index}`).value);
+
+  if(!dose || dose<=0){
+    alert('请输入正确剂量');
+    return;
+  }
+
+  r._组成解析.forEach(c=>{
+    stock[c.name] = (stock[c.name]||0) - (c.gram*dose);
+
+    if(stock[c.name] < 0){
+      stock[c.name] = 0;
+    }
+  });
+
+  usageLog.push({
+    方名:r.方名,
+    剂数:dose,
+    时间:new Date().toLocaleString()
+  });
+
+  saveAll();
+
+  renderAll();
+
+  alert('已扣库存');
+}
+
+function undoLast(index){
+  let log = usageLog[index];
+  if(!log) return;
+
+  let formula = rawData.find(r=>r.方名===log.方名);
+  if(!formula) return;
+
+  formula._组成解析.forEach(c=>{
+    stock[c.name] = (stock[c.name]||0) + (c.gram*log.剂数);
+  });
+
+  usageLog.splice(index,1);
+
+  saveAll();
+  renderAll();
+
+  alert('已恢复库存');
+}
+
+function renderUsageLog(){
+  let html='';
+
+  usageLog.slice().reverse().forEach((l,revIndex)=>{
+    let realIndex = usageLog.length - 1 - revIndex;
+
+    html += `
+      <div class="card">
+        ${l.时间}<br>
+        ${l.方名} × ${l.剂数} 剂
+
+        <button onclick="undoLast(${realIndex})">
+        ↩️ 撤销
+        </button>
+      </div>
+    `;
+  });
+
+  document.getElementById('logSection').innerHTML = html;
+}
+
+function generateDailyReport(){
+  let report = {};
+
+  usageLog.forEach(log=>{
+    let date = log.时间.split(' ')[0];
+
+    if(!report[date]) report[date] = {};
+
+    let formula = rawData.find(r=>r.方名===log.方名);
+    if(!formula) return;
+
+    formula._组成解析.forEach(c=>{
+      report[date][c.name] =
+      (report[date][c.name]||0)
+      + (c.gram*log.剂数);
+    });
+  });
+
+  return report;
+}
+
+function renderDailyReport(){
+  let data = generateDailyReport();
+
+  let html='';
+
+  Object.keys(data).sort().reverse().forEach(date=>{
+
+    html += `<div class="card"><b>${date}</b><br>`;
+
+    Object.keys(data[date]).forEach(h=>{
+      html += `${h}: ${data[date][h].toFixed(1)} g<br>`;
+    });
+
+    html += '</div>';
+  });
+
+  document.getElementById('reportSection').innerHTML = html;
+}
+
+function renderTop10(){
+  let total = calculateUsage();
+
+  let sorted = Object.entries(total)
+    .sort((a,b)=>b[1]-a[1])
+    .slice(0,10);
+
+  let html='';
+
+  sorted.forEach((item,i)=>{
+    html += `
+      <div class="card">
+      ${i+1}. ${item[0]} — ${item[1].toFixed(1)} g
+      </div>
+    `;
+  });
+
+  document.getElementById('top10Section').innerHTML = html;
+}
+
+fileInput.addEventListener('change', e=>{
+  const reader = new FileReader();
+
+  reader.onload = evt=>{
+    const data = new Uint8Array(evt.target.result);
+
+    const wb = XLSX.read(data,{type:'array'});
+
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+
+    const json = XLSX.utils.sheet_to_json(sheet,{defval:''});
+
+    rawData = json.map(r=>({
+      ...r,
+      _组成解析:parseComposition(r['组成']),
+      _searchBlob:Object.values(r).join(' ')
+    }));
+
+    saveAll();
+    renderAll();
+  };
+
+  reader.readAsArrayBuffer(e.target.files[0]);
+});
+
+renderAll();
+</script>
+
+</body>
+</html>
+```
+
+## วิธีใช้งาน
+
+1. แทนที่ไฟล์ index.html เดิมทั้งหมดด้วยไฟล์นี้
+2. upload ขึ้น GitHub ใหม่
+3. refresh GitHub Pages
+4. เปิดบน iPad ผ่าน Safari
+5. Add to Home Screen
+
+## ไฟล์ที่ต้องอยู่ในโฟลเดอร์เดียวกัน
+
+* index.html
+* manifest.json
+* service-worker.js
+* icon.png
